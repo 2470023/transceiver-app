@@ -1,52 +1,54 @@
-// src/Home.js
+// src/Home.tsx
 
 import React, { useState, useEffect } from 'react';
 import { db } from './firebase';
 import {
     collection,
     addDoc,
-    deleteDoc, // 削除用に追加
-    doc,       // ドキュメント指定用に追加
+    deleteDoc,
+    doc,
     onSnapshot,
     query,
     orderBy,
     serverTimestamp,
-    Timestamp  // 時間比較用に追加
+    Timestamp
 } from 'firebase/firestore';
 import './App.css';
 
-function Home({ user, onLogout }) {
-    const [channels, setChannels] = useState([]);
+// プロップスの型定義（TypeScriptのエラー消し用）
+type HomeProps = {
+    user: any;
+    onLogout: () => void;
+    onJoin: (channelId: string) => void; // ★追加: 画面遷移用の関数を受け取る
+};
+
+function Home({ user, onLogout, onJoin }: HomeProps) {
+    const [channels, setChannels] = useState<any[]>([]);
     const [newChannelName, setNewChannelName] = useState("");
     const [newChannelPassword, setNewChannelPassword] = useState("");
-    const [deleteTime, setDeleteTime] = useState(""); // 削除時間用のstate
+    const [deleteTime, setDeleteTime] = useState("");
 
     // --- 1. チャンネル一覧取得 ＆ 期限切れの自動削除 ---
     useEffect(() => {
         const q = query(collection(db, "channels"), orderBy("createdAt", "desc"));
 
         const unsubscribe = onSnapshot(q, (snapshot) => {
-            const now = new Date(); // 現在時刻
-            const activeChannels = [];
+            const now = new Date();
+            const activeChannels: any[] = [];
 
             snapshot.docs.forEach(async (document) => {
                 const data = document.data();
                 const channelId = document.id;
 
-                // 期限切れチェック
                 if (data.expiresAt) {
-                    // FirestoreのTimestampをDate型に変換
                     const expiresDate = data.expiresAt.toDate();
-
                     if (now > expiresDate) {
-                        // 期限を過ぎているので、こっそり削除を実行
                         console.log(`期限切れのチャンネルを削除: ${data.name}`);
                         await deleteDoc(doc(db, "channels", channelId));
-                        return; // 一覧には追加しない
+                        return;
                     }
                 }
 
-                // 生きているチャンネルだけリストに追加
                 activeChannels.push({
                     id: channelId,
                     ...data
@@ -59,8 +61,8 @@ function Home({ user, onLogout }) {
         return () => unsubscribe();
     }, []);
 
-    // --- 2. チャンネル新規作成処理（削除時間付き） ---
-    const createChannel = async (e) => {
+    // --- 2. チャンネル新規作成処理 ---
+    const createChannel = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!newChannelName.trim() || !newChannelPassword.trim()) {
             alert("チャンネル名とパスワードを入力してください");
@@ -68,7 +70,6 @@ function Home({ user, onLogout }) {
         }
 
         try {
-            // 自動削除時間が設定されているか確認
             let expiresAt = null;
             if (deleteTime) {
                 expiresAt = Timestamp.fromDate(new Date(deleteTime));
@@ -77,14 +78,14 @@ function Home({ user, onLogout }) {
             await addDoc(collection(db, "channels"), {
                 name: newChannelName,
                 password: newChannelPassword,
-                expiresAt: expiresAt, // 削除予定時間を保存（なければnull）
+                expiresAt: expiresAt,
                 createdAt: serverTimestamp(),
                 createdBy: user.email
             });
 
             setNewChannelName("");
             setNewChannelPassword("");
-            setDeleteTime(""); // 時間入力もクリア
+            setDeleteTime("");
             alert("チャンネルを作成しました！");
         } catch (error) {
             console.error("作成エラー:", error);
@@ -93,7 +94,7 @@ function Home({ user, onLogout }) {
     };
 
     // --- 3. チャンネル手動削除処理 ---
-    const deleteChannel = async (channelId) => {
+    const deleteChannel = async (channelId: string) => {
         if (window.confirm("本当にこのチャンネルを削除しますか？")) {
             try {
                 await deleteDoc(doc(db, "channels", channelId));
@@ -105,21 +106,20 @@ function Home({ user, onLogout }) {
         }
     };
 
-    // --- 4. 入室処理 ---
-    const joinChannel = (channel) => {
+    // --- 4. 入室処理（★ここを修正しました） ---
+    const joinChannel = (channel: any) => {
         const inputPassword = prompt(`「${channel.name}」のパスワードを入力してください:`);
         if (inputPassword === null) return;
 
         if (inputPassword === channel.password) {
-            alert(`認証成功！\nチャンネルID: ${channel.id} に入室します。`);
-            // ★ここに後で画面遷移の処理を書きます★
+            // ★変更点: アラートを出さずに、親から貰った画面遷移関数を実行
+            onJoin(channel.id);
         } else {
             alert("パスワードが間違っています。");
         }
     };
 
-    // 日付表示用のヘルパー関数
-    const formatDate = (timestamp) => {
+    const formatDate = (timestamp: any) => {
         if (!timestamp) return "なし";
         const d = timestamp.toDate();
         return d.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -134,7 +134,6 @@ function Home({ user, onLogout }) {
 
             <h1>トランシーバー チャンネル選択</h1>
 
-            {/* 作成フォーム */}
             <div style={{ margin: '30px auto', maxWidth: '500px', padding: '20px', border: '1px solid #ddd', borderRadius: '8px', textAlign: 'left' }}>
                 <h3 style={{ marginTop: 0 }}>新規チャンネル作成</h3>
                 <form onSubmit={createChannel} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
@@ -177,7 +176,6 @@ function Home({ user, onLogout }) {
                 </form>
             </div>
 
-            {/* 一覧表示 */}
             <div style={{ maxWidth: '800px', margin: '0 auto' }}>
                 <h3>チャンネル一覧</h3>
                 {channels.length === 0 ? (
@@ -206,7 +204,6 @@ function Home({ user, onLogout }) {
                                 </div>
 
                                 <div style={{ display: 'flex', gap: '10px' }}>
-                                    {/* 削除ボタン: 自分の作ったチャンネルのみ表示 */}
                                     {channel.createdBy === user.email && (
                                         <button
                                             onClick={() => deleteChannel(channel.id)}
