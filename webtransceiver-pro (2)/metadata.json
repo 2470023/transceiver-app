@@ -1,0 +1,7 @@
+{
+  "name": "WebTransceiver Pro",
+  "description": "A real-time push-to-talk web transceiver using Web Speech API for transcription and simulated signaling for multi-tab communication.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
