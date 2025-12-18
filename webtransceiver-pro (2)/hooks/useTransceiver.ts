@@ -1,84 +1,66 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Transcript, IWindow, UserRole } from '../types';
-
-const CHANNEL_PREFIX = 'web-transceiver-v3-slot-';
+// ★Firebase関連をインポート
+import { db } from '../firebase';
+import {
+  collection,
+  addDoc,
+  onSnapshot,
+  query,
+  orderBy,
+  serverTimestamp
+} from 'firebase/firestore';
 
 export const useTransceiver = (
-  userName: string, 
-  channelSlot: number | null,
-  channelName: string,
+  userName: string,
+  channelSlot: number | null, // 使わないが引数の順番維持のため残す
+  channelId: string,          // ここにFirestoreのドキュメントIDが入ってくる
   passkey: string,
   role: UserRole
 ) => {
   const [isRecording, setIsRecording] = useState(false);
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [permissionError, setPermissionError] = useState<string | null>(null);
-  
+
   const recognitionRef = useRef<any>(null);
-  const channelRef = useRef<BroadcastChannel | null>(null);
 
-  // Initialize BroadcastChannel
+  // --- 1. 受信機能 (Firestore監視) ---
   useEffect(() => {
-    if (!channelSlot) return;
-    
-    // Fixed internal ID based on slot number
-    const internalChannelName = `${CHANNEL_PREFIX}${channelSlot}`;
-    const channel = new BroadcastChannel(internalChannelName);
-    
-    channel.onmessage = (event) => {
-      const { type, payload, requestId } = event.data;
+    if (!channelId) return;
 
-      // 1. Handle Transcript Messages
-      if (type === 'TRANSCRIPT') {
-        // Security Check: Only accept messages with matching passkey
-        if (payload.passkey !== passkey) return;
+    // ★重要: "channels" ではなく "channels_pro" を見に行くように変更
+    // channels_pro/{channelId}/messages コレクションを監視
+    const messagesRef = collection(db, "channels_pro", channelId, "messages");
+    const q = query(messagesRef, orderBy("createdAt", "asc"));
 
-        const incomingTranscript: Transcript = {
-          ...payload.transcriptData,
-          isLocal: false,
-        };
-        setTranscripts(prev => [...prev, incomingTranscript]);
-      }
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const newTranscripts = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          userId: data.userId || 'unknown',
+          userName: data.userName || 'Anonymous',
+          text: data.text,
+          // FirestoreのTimestampをミリ秒に変換。なければ現在時刻
+          timestamp: data.createdAt ? data.createdAt.toMillis() : Date.now(),
+          // 自分の発言かどうか判定
+          isLocal: data.userName === userName
+        } as Transcript;
+      });
 
-      // 2. Handle Handshake (HOST ONLY)
-      if (role === 'HOST') {
-        if (type === 'JOIN_REQUEST') {
-          const isPasskeyValid = payload.passkey === passkey;
-          channel.postMessage({
-            type: 'JOIN_RESPONSE',
-            requestId: requestId,
-            status: isPasskeyValid ? 'OK' : 'WRONG_PASS'
-          });
-        }
+      setTranscripts(newTranscripts);
+    });
 
-        // 3. Handle Discovery (For Landing Page Scanners)
-        if (type === 'DISCOVERY_PING') {
-          channel.postMessage({
-            type: 'DISCOVERY_PONG',
-            payload: {
-              slotId: channelSlot,
-              name: channelName, // Respond with current display name
-              hostName: userName
-            }
-          });
-        }
-      }
-    };
+    return () => unsubscribe();
+  }, [channelId, userName]);
 
-    channelRef.current = channel;
-
-    return () => {
-      channel.close();
-    };
-  }, [channelSlot, passkey, role, channelName, userName]);
-
-  // Initialize Web Speech API
+  // --- 2. 音声認識の初期化 (Web Speech API) ---
   useEffect(() => {
     const win = window as unknown as IWindow;
     const SpeechRecognition = win.SpeechRecognition || win.webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-      setPermissionError("This browser does not support Web Speech API.");
+      setPermissionError("このブラウザは音声認識に対応していません。ChromeまたはSafariをご利用ください。");
       return;
     }
 
@@ -86,7 +68,6 @@ export const useTransceiver = (
     recognition.lang = 'ja-JP';
     recognition.continuous = true;
     recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
       setIsRecording(true);
@@ -98,8 +79,9 @@ export const useTransceiver = (
     };
 
     recognition.onerror = (event: any) => {
+      console.error("Speech Error:", event.error);
       if (event.error === 'not-allowed') {
-        setPermissionError("Microphone access denied.");
+        setPermissionError("マイクの使用が許可されていません。");
       }
       setIsRecording(false);
     };
@@ -107,7 +89,7 @@ export const useTransceiver = (
     recognition.onresult = (event: any) => {
       const results = event.results;
       const lastResult = results[results.length - 1];
-      
+
       if (lastResult.isFinal) {
         const text = lastResult[0].transcript;
         handleNewTranscript(text);
@@ -115,43 +97,33 @@ export const useTransceiver = (
     };
 
     recognitionRef.current = recognition;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userName, channelSlot, passkey]); 
-
-  const handleNewTranscript = useCallback((text: string) => {
+  // --- 3. 送信機能 (Firestoreへ保存) ---
+  const handleNewTranscript = useCallback(async (text: string) => {
     if (!text.trim()) return;
 
-    const newTranscript: Transcript = {
-      id: crypto.randomUUID(),
-      userId: 'local',
-      userName: userName || 'Anonymous',
-      text: text,
-      timestamp: Date.now(),
-      isLocal: true,
-    };
-
-    // Update local state
-    setTranscripts(prev => [...prev, newTranscript]);
-
-    // Broadcast
-    if (channelRef.current) {
-      channelRef.current.postMessage({
-        type: 'TRANSCRIPT',
-        payload: {
-          passkey: passkey,
-          transcriptData: newTranscript
-        }
+    try {
+      // ★重要: "channels_pro" の messages に書き込む
+      const messagesRef = collection(db, "channels_pro", channelId, "messages");
+      await addDoc(messagesRef, {
+        text: text,
+        userName: userName || 'Anonymous',
+        userId: userName, // 簡易IDとして名前を使用
+        createdAt: serverTimestamp(), // サーバー時間
       });
+    } catch (e) {
+      console.error("送信エラー:", e);
     }
-  }, [userName, passkey]);
+  }, [channelId, userName]);
 
   const startTransmission = useCallback(() => {
     if (recognitionRef.current && !isRecording) {
       try {
         recognitionRef.current.start();
       } catch (e) {
-        console.error("Recognition already started", e);
+        console.error("録音開始エラー:", e);
       }
     }
   }, [isRecording]);
@@ -162,16 +134,11 @@ export const useTransceiver = (
     }
   }, [isRecording]);
 
-  const clearTranscripts = useCallback(() => {
-    setTranscripts([]);
-  }, []);
-
   return {
     isRecording,
     transcripts,
     permissionError,
     startTransmission,
-    stopTransmission,
-    clearTranscripts
+    stopTransmission
   };
 };

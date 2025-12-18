@@ -47,7 +47,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onJoin }) => {
   // --- 1. Firestoreからチャンネル一覧をリアルタイム取得 ---
   useEffect(() => {
     // 作成日時の新しい順に取得
-    const q = query(collection(db, "channels"), orderBy("createdAt", "desc"));
+    const q = query(collection(db, "channels_pro"), orderBy("createdAt", "desc"));
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const fetchedChannels = snapshot.docs.map(doc => ({
@@ -89,6 +89,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onJoin }) => {
   // --- 2. チャンネル新規作成処理 (Firestoreへ保存) ---
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    console.log("Checking Firestore instance:", db);
+    if (!db) {
+      console.error("Firestore (db) が初期化されていません！");
+      return;
+    }
+
+    console.log("1. 作成処理開始"); // ログ追加
 
     if (!formData.userName.trim() || !formData.customChannelName.trim()) {
       setError("名前とチャンネル名を入力してください。");
@@ -103,6 +110,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onJoin }) => {
     setStatusMessage('安全性を確認中...');
 
     try {
+      console.log("2. 安全性チェック開始");
       const isNameSafe = await checkContentSafety(formData.userName);
       const isChannelSafe = await checkContentSafety(formData.customChannelName);
 
@@ -110,33 +118,115 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onJoin }) => {
         throw "不適切な表現が含まれています。";
       }
 
+      console.log("3. Firestoreへの書き込み開始");
       setStatusMessage('チャンネルを作成中...');
 
-      // Firestoreに保存
-      const docRef = await addDoc(collection(db, "channels"), {
-        name: formData.customChannelName,
-        password: formData.passkey,
-        createdBy: formData.userName,
-        createdAt: serverTimestamp()
-      });
+      // 5秒で強制終了させるタイマー
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("通信タイムアウト：サーバーからの応答がありません")), 5000)
+      );
 
-      // 作成完了後、即座に入室処理へ
-      onJoin({
-        userName: formData.userName,
-        // channelSlotは廃止しましたが、型定義の互換性のためにダミー(1)またはハッシュ等を渡します
-        channelSlot: 1,
-        // 重要なのはここ：ドキュメントIDをチャンネル識別子として渡す
-        channelName: docRef.id,
-        passkey: formData.passkey,
-        role: 'HOST'
-      });
+      try {
+        // 書き込み処理とタイマーの早いもの勝ち
+        const docRef = await Promise.race([
+          addDoc(collection(db, "channels_pro"), {
+            name: formData.customChannelName,
+            password: formData.passkey,
+            createdBy: formData.userName,
+            createdAt: serverTimestamp()
+          }),
+          timeout
+        ]) as any;
+
+        console.log("4. 書き込み成功！ ID:", docRef.id);
+        setIsCreateModalOpen(false);
+        // ...以下、onJoinなどの既存処理
+        onJoin({
+          userName: formData.userName,
+          channelSlot: 1,
+          channelName: docRef.id,
+          passkey: formData.passkey,
+          role: 'HOST'
+        });
+
+      } catch (err: any) {
+        console.error("★決定的なエラー:", err.message);
+        setError(err.message);
+      }
+
+      // // ★ここで止まっている可能性が高いです
+      // const docRef = await addDoc(collection(db, "channels_pro"), {
+      //   name: formData.customChannelName,
+      //   password: formData.passkey,
+      //   createdBy: formData.userName,
+      //   createdAt: serverTimestamp()
+      // });
+
+      // console.log("4. 書き込み成功！ ID:", docRef.id);
+
+      // // 明示的にモーダルを閉じる処理を追加
+      // setIsCreateModalOpen(false);
+
+
 
     } catch (err: any) {
+      console.error("作成エラー発生:", err); // エラーの内容を表示
       setError(typeof err === 'string' ? err : "エラーが発生しました");
     } finally {
       setIsValidating(false);
     }
   };
+
+  // const handleCreateSubmit = async (e: React.FormEvent) => {
+  //   e.preventDefault();
+
+  //   if (!formData.userName.trim() || !formData.customChannelName.trim()) {
+  //     setError("名前とチャンネル名を入力してください。");
+  //     return;
+  //   }
+  //   if (!formData.passkey) {
+  //     setError("パスワードを設定してください。");
+  //     return;
+  //   }
+
+  //   setIsValidating(true);
+  //   setStatusMessage('安全性を確認中...');
+
+  //   try {
+  //     const isNameSafe = await checkContentSafety(formData.userName);
+  //     const isChannelSafe = await checkContentSafety(formData.customChannelName);
+
+  //     if (!isNameSafe || !isChannelSafe) {
+  //       throw "不適切な表現が含まれています。";
+  //     }
+
+  //     setStatusMessage('チャンネルを作成中...');
+
+  //     // Firestoreに保存
+  //     const docRef = await addDoc(collection(db, "channels_pro"), {
+  //       name: formData.customChannelName,
+  //       password: formData.passkey,
+  //       createdBy: formData.userName,
+  //       createdAt: serverTimestamp()
+  //     });
+
+  //     // 作成完了後、即座に入室処理へ
+  //     onJoin({
+  //       userName: formData.userName,
+  //       // channelSlotは廃止しましたが、型定義の互換性のためにダミー(1)またはハッシュ等を渡します
+  //       channelSlot: 1,
+  //       // 重要なのはここ：ドキュメントIDをチャンネル識別子として渡す
+  //       channelName: docRef.id,
+  //       passkey: formData.passkey,
+  //       role: 'HOST'
+  //     });
+
+  //   } catch (err: any) {
+  //     setError(typeof err === 'string' ? err : "エラーが発生しました");
+  //   } finally {
+  //     setIsValidating(false);
+  //   }
+  // };
 
   // --- 3. 入室処理 (パスワード照合) ---
   const handleJoinSubmit = async (e: React.FormEvent) => {

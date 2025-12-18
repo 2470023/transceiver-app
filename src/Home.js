@@ -23,7 +23,7 @@ function Home({ user, onLogout }) {
 
     // --- 1. チャンネル一覧取得 ＆ 期限切れの自動削除 ---
     useEffect(() => {
-        const q = query(collection(db, "channels"), orderBy("createdAt", "desc"));
+        const q = query(collection(db, "channels_pro"), orderBy("createdAt", "desc"));
 
         const unsubscribe = onSnapshot(q, (snapshot) => {
             const now = new Date(); // 現在時刻
@@ -74,7 +74,7 @@ function Home({ user, onLogout }) {
                 expiresAt = Timestamp.fromDate(new Date(deleteTime));
             }
 
-            await addDoc(collection(db, "channels"), {
+            await addDoc(collection(db, "channels_pro"), {
                 name: newChannelName,
                 password: newChannelPassword,
                 expiresAt: expiresAt, // 削除予定時間を保存（なければnull）
